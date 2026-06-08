@@ -1,5 +1,12 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
+// ==================================================
+// 전역 설정
+// ==================================================
+// 주의: 여기에 API Key를 직접 입력해두면 매번 설정할 필요가 없어 매우 편리하지만, 
+// 소스코드에 키가 노출되므로 학교 선생님들끼리만 사용하는 안전한 링크에서만 활용하세요.
+const DEFAULT_API_KEY = ""; // 예시: "AIzaSy..." (따옴표 안에 입력)
+
 // 기본 샘플 데이터
 const defaultDocuments = [
     {
@@ -187,7 +194,7 @@ function App() {
     
     // API 설정 관련 상태
     const [apiKey, setApiKey] = React.useState(() => {
-        return localStorage.getItem('school_chatbot_api_key') || "";
+        return localStorage.getItem('school_chatbot_api_key') || DEFAULT_API_KEY;
     });
     const [selectedModel, setSelectedModel] = React.useState(() => {
         return localStorage.getItem('school_chatbot_model') || "gemini-2.5-flash";
@@ -378,6 +385,7 @@ function App() {
 
             let newDocsFound = [];
             let skippedCount = 0;
+            let updatedCount = 0;
             let processedCount = 0;
 
             for await (const entry of dirHandle.values()) {
