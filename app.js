@@ -134,6 +134,45 @@ async function deleteFolderHandle() {
     });
 }
 
+// ==================================================
+// HWPX Text Extraction Helper
+// ==================================================
+async function extractHwpxText(arrayBuffer) {
+    if (!window.JSZip) {
+        throw new Error("JSZip 라이브러리가 로드되지 않았습니다.");
+    }
+    const zip = new JSZip();
+    const loadedZip = await zip.loadAsync(arrayBuffer);
+    
+    let extractedText = "";
+    
+    // Contents 폴더 안의 section*.xml 파일들을 찾음
+    const xmlFiles = Object.keys(loadedZip.files).filter(name => name.startsWith("Contents/section") && name.endsWith(".xml"));
+    
+    // 섹션 번호 순서대로 정렬
+    xmlFiles.sort((a, b) => {
+        const numA = parseInt(a.match(/\d+/) || [0], 10);
+        const numB = parseInt(b.match(/\d+/) || [0], 10);
+        return numA - numB;
+    });
+
+    for (const xmlPath of xmlFiles) {
+        const xmlString = await loadedZip.files[xmlPath].async("string");
+        
+        // 정규표현식으로 <hp:t>태그 안의 텍스트 추출
+        const regex = /<hp:t[^>]*>(.*?)<\/hp:t>/g;
+        let match;
+        while ((match = regex.exec(xmlString)) !== null) {
+            let text = match[1];
+            // XML 기본 엔티티 디코딩
+            text = text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+            extractedText += text + "\n";
+        }
+    }
+    
+    return extractedText.trim();
+}
+
 function App() {
     const [documents, setDocuments] = React.useState(() => {
         const saved = localStorage.getItem('school_chatbot_docs');
@@ -250,7 +289,7 @@ function App() {
             for await (const entry of dirHandle.values()) {
                 if (entry.kind !== 'file') continue;
                 const name = entry.name;
-                const isTargetFile = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.txt');
+                const isTargetFile = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.txt') || name.toLowerCase().endsWith('.hwpx');
                 if (!isTargetFile) continue;
 
                 // 스마트 델타 동기화 로직
@@ -312,6 +351,28 @@ function App() {
                                     id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
                                     title: name,
                                     type: 'txt',
+                                    content: text,
+                                    size: newSize
+                                });
+                            }
+                        }
+                    } else if (name.toLowerCase().endsWith('.hwpx')) {
+                        const arrayBuffer = await file.arrayBuffer();
+                        const text = await extractHwpxText(arrayBuffer);
+                        if (text.trim()) {
+                            const newSize = text.length.toLocaleString() + "자";
+                            if (existingDocIndex >= 0) {
+                                if (documents[existingDocIndex].size !== newSize) {
+                                    documents[existingDocIndex] = { ...documents[existingDocIndex], content: text, size: newSize };
+                                    updatedCount++;
+                                } else {
+                                    skippedCount++;
+                                }
+                            } else {
+                                newDocsFound.push({
+                                    id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                                    title: name,
+                                    type: 'hwpx',
                                     content: text,
                                     size: newSize
                                 });
@@ -391,7 +452,7 @@ function App() {
             for await (const entry of dirHandle.values()) {
                 if (entry.kind !== 'file') continue;
                 const name = entry.name;
-                const isTargetFile = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.txt');
+                const isTargetFile = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.txt') || name.toLowerCase().endsWith('.hwpx');
                 if (!isTargetFile) continue;
 
                 // 스마트 델타 동기화 로직
@@ -437,6 +498,22 @@ function App() {
                                 }
                             } else {
                                 newDocsFound.push({ id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5), title: name, type: 'txt', content: text, size: newSize });
+                            }
+                        }
+                    } else if (name.toLowerCase().endsWith('.hwpx')) {
+                        const arrayBuffer = await file.arrayBuffer();
+                        const text = await extractHwpxText(arrayBuffer);
+                        if (text.trim()) {
+                            const newSize = text.length.toLocaleString() + "자";
+                            if (existingDocIndex >= 0) {
+                                if (documents[existingDocIndex].size !== newSize) {
+                                    documents[existingDocIndex] = { ...documents[existingDocIndex], content: text, size: newSize };
+                                    updatedCount++;
+                                } else {
+                                    skippedCount++;
+                                }
+                            } else {
+                                newDocsFound.push({ id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5), title: name, type: 'hwpx', content: text, size: newSize });
                             }
                         }
                     }
@@ -559,11 +636,15 @@ function App() {
         }
     };
 
-    const handlePdfUpload = async (e) => {
+    const handleFileUpload = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        if (file.type !== "application/pdf") {
-            setErrorMsg("PDF 형식의 파일만 업로드할 수 있습니다.");
+        
+        const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+        const isHwpx = file.name.toLowerCase().endsWith(".hwpx");
+        
+        if (!isPdf && !isHwpx) {
+            setErrorMsg("PDF 또는 HWPX 형식의 파일만 업로드할 수 있습니다.");
             return;
         }
 
@@ -575,35 +656,42 @@ function App() {
             const reader = new FileReader();
             reader.onload = async function() {
                 try {
-                    const typedarray = new Uint8Array(this.result);
-                    const loadingTask = pdfjsLib.getDocument({ data: typedarray });
-                    const pdf = await loadingTask.promise;
-                    
                     let extractedText = "";
-                    const numPages = pdf.numPages;
+                    let docType = "";
                     
-                    for (let i = 1; i <= numPages; i++) {
-                        const page = await pdf.getPage(i);
-                        const textContentObj = await page.getTextContent();
-                        const pageText = textContentObj.items.map(item => item.str).join(" ");
-                        extractedText += `--- [Page ${i}] ---\n` + pageText + "\n\n";
+                    if (isPdf) {
+                        const typedarray = new Uint8Array(this.result);
+                        const loadingTask = pdfjsLib.getDocument({ data: typedarray });
+                        const pdf = await loadingTask.promise;
+                        
+                        const numPages = pdf.numPages;
+                        for (let i = 1; i <= numPages; i++) {
+                            const page = await pdf.getPage(i);
+                            const textContentObj = await page.getTextContent();
+                            const pageText = textContentObj.items.map(item => item.str).join(" ");
+                            extractedText += `--- [Page ${i}] ---\n` + pageText + "\n\n";
+                        }
+                        docType = "pdf";
+                    } else if (isHwpx) {
+                        extractedText = await extractHwpxText(this.result);
+                        docType = "hwpx";
                     }
 
                     if (!extractedText.trim()) {
-                        throw new Error("PDF에서 텍스트를 추출하지 못했습니다. 이미지 형태의 PDF인 경우 글자를 읽기 어려울 수 있습니다.");
+                        throw new Error(`${docType.toUpperCase()}에서 텍스트를 추출하지 못했습니다.`);
                     }
 
                     const newDoc = {
                         id: 'doc_' + Date.now(),
                         title: file.name,
-                        type: 'pdf',
+                        type: docType,
                         content: extractedText,
                         size: extractedText.length.toLocaleString() + "자"
                     };
 
                     const updatedDocs = [newDoc, ...documents];
                     setDocuments(updatedDocs);
-                    setSuccessMsg("PDF 문서를 성공적으로 등록했습니다!");
+                    setSuccessMsg(`${docType.toUpperCase()} 문서를 성공적으로 등록했습니다!`);
                     setIsParsingPdf(false);
                     if (fileInputRef.current) fileInputRef.current.value = "";
 
@@ -612,7 +700,7 @@ function App() {
                         generateAiPresets(updatedDocs, apiKey, selectedModel);
                     }
                 } catch (err) {
-                    setErrorMsg(err.message || "PDF 분석에 실패했습니다.");
+                    setErrorMsg(err.message || "파일 분석에 실패했습니다.");
                     setIsParsingPdf(false);
                 }
             };
@@ -876,20 +964,20 @@ function App() {
                                     <input 
                                         type="file" 
                                         ref={fileInputRef}
-                                        accept=".pdf" 
-                                        onChange={handlePdfUpload}
+                                        accept=".pdf,.hwpx" 
+                                        onChange={handleFileUpload}
                                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                                         disabled={isParsingPdf}
                                     />
                                     {isParsingPdf ? (
                                         <div className="flex flex-col items-center justify-center space-y-1.5 py-1">
                                             <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                                            <p className="text-[10px] text-indigo-600 font-semibold">PDF 분석 중...</p>
+                                            <p className="text-[10px] text-indigo-600 font-semibold">파일 분석 중...</p>
                                         </div>
                                     ) : (
                                         <div className="space-y-0.5">
                                             <div className="text-indigo-500 text-lg"><i className="fa-solid fa-cloud-arrow-up"></i></div>
-                                            <p className="text-[10px] font-bold text-slate-700">PDF 파일 등록</p>
+                                            <p className="text-[10px] font-bold text-slate-700">PDF/HWPX 등록</p>
                                             <p className="text-[9px] text-slate-400">파일 1개씩 등록</p>
                                         </div>
                                     )}
@@ -991,8 +1079,8 @@ function App() {
                                         {documents.map((doc) => (
                                             <div key={doc.id} className="group border border-slate-100 hover:border-indigo-100 bg-white p-2.5 rounded-xl flex items-start justify-between space-x-2 transition-all shadow-sm">
                                                 <div className="flex items-start space-x-2 min-w-0">
-                                                    <span className={`text-sm mt-0.5 flex-shrink-0 ${doc.type === 'pdf' ? 'text-rose-500' : 'text-blue-500'}`}>
-                                                        <i className={doc.type === 'pdf' ? "fa-solid fa-file-pdf" : "fa-solid fa-file-lines"}></i>
+                                                    <span className={`text-sm mt-0.5 flex-shrink-0 ${doc.type === 'pdf' ? 'text-rose-500' : doc.type === 'hwpx' ? 'text-cyan-500' : 'text-slate-500'}`}>
+                                                        <i className={doc.type === 'pdf' ? "fa-solid fa-file-pdf" : doc.type === 'hwpx' ? "fa-solid fa-file-word" : "fa-solid fa-file-lines"}></i>
                                                     </span>
                                                     <div className="min-w-0">
                                                         <h4 className="text-xs font-semibold text-slate-700 truncate">{doc.title}</h4>
