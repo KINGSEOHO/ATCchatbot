@@ -236,6 +236,7 @@ function App() {
 
             let newDocsFound = [];
             let skippedCount = 0;
+            let updatedCount = 0;
             let processedCount = 0;
 
             // 폴더 내 파일 순회
@@ -245,12 +246,8 @@ function App() {
                 const isTargetFile = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.txt');
                 if (!isTargetFile) continue;
 
-                // 이미 동일 파일명으로 등록된 문서가 있으면 건너뜀
-                const alreadyExists = documents.some(doc => doc.title === name);
-                if (alreadyExists) {
-                    skippedCount++;
-                    continue;
-                }
+                // 스마트 델타 동기화 로직
+                const existingDocIndex = documents.findIndex(doc => doc.title === name);
 
                 processedCount++;
                 setFolderSyncStatus(`분석 중: ${name} (${processedCount}번째 파일...)`);
@@ -274,24 +271,44 @@ function App() {
                         }
 
                         if (extractedText.trim()) {
-                            newDocsFound.push({
-                                id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
-                                title: name,
-                                type: 'pdf',
-                                content: extractedText,
-                                size: extractedText.length.toLocaleString() + "자"
-                            });
+                            const newSize = extractedText.length.toLocaleString() + "자";
+                            if (existingDocIndex >= 0) {
+                                if (documents[existingDocIndex].size !== newSize) {
+                                    documents[existingDocIndex] = { ...documents[existingDocIndex], content: extractedText, size: newSize };
+                                    updatedCount++;
+                                } else {
+                                    skippedCount++;
+                                }
+                            } else {
+                                newDocsFound.push({
+                                    id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                                    title: name,
+                                    type: 'pdf',
+                                    content: extractedText,
+                                    size: newSize
+                                });
+                            }
                         }
                     } else if (name.toLowerCase().endsWith('.txt')) {
                         const text = await file.text();
                         if (text.trim()) {
-                            newDocsFound.push({
-                                id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
-                                title: name,
-                                type: 'txt',
-                                content: text,
-                                size: text.length.toLocaleString() + "자"
-                            });
+                            const newSize = text.length.toLocaleString() + "자";
+                            if (existingDocIndex >= 0) {
+                                if (documents[existingDocIndex].size !== newSize) {
+                                    documents[existingDocIndex] = { ...documents[existingDocIndex], content: text, size: newSize };
+                                    updatedCount++;
+                                } else {
+                                    skippedCount++;
+                                }
+                            } else {
+                                newDocsFound.push({
+                                    id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                                    title: name,
+                                    type: 'txt',
+                                    content: text,
+                                    size: newSize
+                                });
+                            }
                         }
                     }
                 } catch (fileErr) {
@@ -305,21 +322,21 @@ function App() {
             setHasSavedFolder(true);
             setFolderPermissionRequired(false);
 
-            if (newDocsFound.length > 0) {
-                const updatedDocs = [...newDocsFound, ...documents];
-                setDocuments(updatedDocs);
+            if (newDocsFound.length > 0 || updatedCount > 0) {
+                const finalDocs = [...newDocsFound, ...documents];
+                setDocuments(finalDocs);
 
-                let msg = `"${dirHandle.name}" 폴더에서 ${newDocsFound.length}개의 새 문서를 성공적으로 등록했습니다!`;
-                if (skippedCount > 0) msg += ` (이미 등록된 ${skippedCount}개 파일은 건너뜀)`;
+                let msg = `"${dirHandle.name}" 폴더 연동 완료: 추가 ${newDocsFound.length}개, 업데이트 ${updatedCount}개`;
+                if (skippedCount > 0) msg += ` (유지 ${skippedCount}개)`;
                 setSuccessMsg(msg);
 
                 if (apiKey) {
-                    generateAiPresets(updatedDocs, apiKey, selectedModel);
+                    generateAiPresets(finalDocs, apiKey, selectedModel);
                 }
             } else if (skippedCount > 0) {
-                setSuccessMsg(`폴더 내 ${skippedCount}개 파일이 이미 모두 등록되어 있습니다. 새로 추가할 문서가 없습니다.`);
+                setSuccessMsg(`"${dirHandle.name}" 폴더 내 ${skippedCount}개 파일이 최신 상태입니다. 추가할 문서가 없습니다.`);
             } else {
-                setErrorMsg("선택하신 폴더에서 PDF 또는 TXT 파일을 찾을 수 없습니다.");
+                setErrorMsg("선택하신 폴더에서 지원하는 문서를 찾을 수 없습니다.");
             }
         } catch (err) {
             // 사용자가 폴더 선택을 취소한 경우 (AbortError)
@@ -369,14 +386,12 @@ function App() {
                 const isTargetFile = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.txt');
                 if (!isTargetFile) continue;
 
-                const alreadyExists = documents.some(doc => doc.title === name);
-                if (alreadyExists) { skippedCount++; continue; }
-
-                processedCount++;
-                setFolderSyncStatus(`분석 중: ${name} (${processedCount}번째 파일...)`);
-
+                // 스마트 델타 동기화 로직
+                const existingDocIndex = documents.findIndex(doc => doc.title === name);
+                
                 try {
                     const file = await entry.getFile();
+                    
                     if (name.toLowerCase().endsWith('.pdf')) {
                         const arrayBuffer = await file.arrayBuffer();
                         const typedarray = new Uint8Array(arrayBuffer);
@@ -388,28 +403,49 @@ function App() {
                             extractedText += `--- [Page ${i}] ---\n` + tc.items.map(item => item.str).join(" ") + "\n\n";
                         }
                         if (extractedText.trim()) {
-                            newDocsFound.push({ id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5), title: name, type: 'pdf', content: extractedText, size: extractedText.length.toLocaleString() + "자" });
+                            const newSize = extractedText.length.toLocaleString() + "자";
+                            if (existingDocIndex >= 0) {
+                                // 기존 문서 존재, 크기 비교 (간이 변경 감지)
+                                if (documents[existingDocIndex].size !== newSize) {
+                                    documents[existingDocIndex] = { ...documents[existingDocIndex], content: extractedText, size: newSize };
+                                    updatedCount++;
+                                } else {
+                                    skippedCount++;
+                                }
+                            } else {
+                                newDocsFound.push({ id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5), title: name, type: 'pdf', content: extractedText, size: newSize });
+                            }
                         }
                     } else if (name.toLowerCase().endsWith('.txt')) {
                         const text = await file.text();
                         if (text.trim()) {
-                            newDocsFound.push({ id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5), title: name, type: 'txt', content: text, size: text.length.toLocaleString() + "자" });
+                            const newSize = text.length.toLocaleString() + "자";
+                            if (existingDocIndex >= 0) {
+                                if (documents[existingDocIndex].size !== newSize) {
+                                    documents[existingDocIndex] = { ...documents[existingDocIndex], content: text, size: newSize };
+                                    updatedCount++;
+                                } else {
+                                    skippedCount++;
+                                }
+                            } else {
+                                newDocsFound.push({ id: 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5), title: name, type: 'txt', content: text, size: newSize });
+                            }
                         }
                     }
                 } catch (fileErr) { console.warn(`파일 처리 실패 (${name}):`, fileErr); }
             }
 
-            if (newDocsFound.length > 0) {
-                const updatedDocs = [...newDocsFound, ...documents];
-                setDocuments(updatedDocs);
-                let msg = `"${dirHandle.name}" 폴더에서 ${newDocsFound.length}개의 새 문서를 추가했습니다!`;
-                if (skippedCount > 0) msg += ` (기존 ${skippedCount}개는 건너뜀)`;
+            if (newDocsFound.length > 0 || updatedCount > 0) {
+                const finalDocs = [...newDocsFound, ...documents];
+                setDocuments(finalDocs);
+                let msg = `"${dirHandle.name}" 폴더 동기화 완료: 추가 ${newDocsFound.length}개, 업데이트 ${updatedCount}개`;
+                if (skippedCount > 0) msg += ` (유지 ${skippedCount}개)`;
                 setSuccessMsg(msg);
-                if (apiKey) generateAiPresets(updatedDocs, apiKey, selectedModel);
+                if (apiKey) generateAiPresets(finalDocs, apiKey, selectedModel);
             } else if (skippedCount > 0) {
-                setSuccessMsg(`"${dirHandle.name}" 폴더가 최신 상태입니다. 새로 추가할 파일이 없습니다.`);
+                setSuccessMsg(`"${dirHandle.name}" 폴더가 최신 상태입니다. (변경사항 없음)`);
             } else {
-                setErrorMsg("연동된 폴더에서 PDF 또는 TXT 파일을 찾을 수 없습니다.");
+                setErrorMsg("연동된 폴더에서 지원하는 문서를 찾을 수 없습니다.");
             }
         } catch (err) {
             if (err.name !== 'AbortError') {
